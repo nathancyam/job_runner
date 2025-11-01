@@ -45,7 +45,7 @@ defmodule JobRunner do
 
           time = Enum.random(1000..5000)
 
-          if Enum.random(1..6) == 6 do
+          if Enum.random(1..20) == 1 do
             raise "Simulated task failure for task #{i}"
           end
 
