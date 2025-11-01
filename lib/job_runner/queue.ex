@@ -65,12 +65,12 @@ defmodule JobRunner.Queue do
   @impl GenServer
   def handle_cast({:enqueue, task}, state) when is_function(task) do
     queue = :queue.in(task, state.queue)
-    send(self(), :process)
+    send(self(), :dequeue)
     {:noreply, %{state | queue: queue}}
   end
 
   @impl GenServer
-  def handle_info(:process, %{queue: queue, tasks_in_progress: tasks_in_progress} = state) do
+  def handle_info(:dequeue, %{queue: queue, tasks_in_progress: tasks_in_progress} = state) do
     busy_workers = Map.keys(tasks_in_progress)
 
     # Are there any available workers by checking the process group members?
@@ -84,9 +84,11 @@ defmodule JobRunner.Queue do
         case :queue.out(queue) do
           {{:value, task}, new_queue} ->
             tasks_in_progress = Map.put(tasks_in_progress, worker, task)
+            state = %{state | queue: new_queue, tasks_in_progress: tasks_in_progress}
 
-            {:noreply, %{state | queue: new_queue, tasks_in_progress: tasks_in_progress},
-             {:continue, {:work, worker, task}}}
+            # Set the tasks progress state before running the tasks to minimize
+            # race conditions where the worker fails faster than we update the state.
+            {:noreply, state, {:continue, {:run_task, worker, task}}}
 
           {:empty, _} ->
             {:noreply, state}
@@ -100,14 +102,14 @@ defmodule JobRunner.Queue do
     # remove it from the tasks in progress.
     Process.demonitor(monitor)
     tasks_in_progress = Map.delete(state.tasks_in_progress, worker_pid)
-    {:noreply, %{state | tasks_in_progress: tasks_in_progress}, {:continue, :process}}
+    {:noreply, %{state | tasks_in_progress: tasks_in_progress}, {:continue, :dequeue}}
   end
 
   def handle_info({:DOWN, _ref, :process, worker_pid, _reason}, state) do
     # Worker process crashed, retrieve the task it was working on (if any)
-    # and re-enqueue it. The worker should be restarted by the supervisor.
+    # and enqueue it. The worker should be restarted by the supervisor.
     state = State.recover_and_requeue(state, worker_pid)
-    {:noreply, state, {:continue, :process}}
+    {:noreply, state, {:continue, :dequeue}}
   end
 
   def handle_info(
@@ -120,7 +122,7 @@ defmodule JobRunner.Queue do
     #
     # TODO: Maybe add some threshold here to only start processing if we have enough workers
     if map_size(tasks_in_progress) == 0 and :queue.len(queue) > 0 do
-      send(self(), :process)
+      send(self(), :dequeue)
     end
 
     {:noreply, state}
@@ -133,7 +135,7 @@ defmodule JobRunner.Queue do
   end
 
   @impl true
-  def handle_continue({:work, worker_pid, task}, state) do
+  def handle_continue({:run_task, worker_pid, task}, state) do
     queue_pid = self()
     monitor = Process.monitor(worker_pid)
 
@@ -146,5 +148,5 @@ defmodule JobRunner.Queue do
     {:noreply, state}
   end
 
-  def handle_continue(:process, state), do: handle_info(:process, state)
+  def handle_continue(:dequeue, state), do: handle_info(:dequeue, state)
 end
