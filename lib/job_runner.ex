@@ -54,7 +54,7 @@ defmodule JobRunner do
           :ok
         end
 
-      JobRunner.Queue.enqueue(queue_pid, task)
+      JobRunner.Queue.async_enqueue(queue_pid, task)
     end
   end
 end

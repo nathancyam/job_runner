@@ -13,7 +13,7 @@ defmodule JobRunner.Worker do
       on_start.(self())
     end
 
-    {:ok, %{}}
+    {:ok, %{tasks_completed: 0}}
   end
 
   def work_on_task(worker_pid, task) when is_function(task) do
@@ -23,6 +23,6 @@ defmodule JobRunner.Worker do
   @impl GenServer
   def handle_cast({:work_on_task, task}, state) do
     task.()
-    {:noreply, state}
+    {:noreply, %{state | tasks_completed: state.tasks_completed + 1}}
   end
 end

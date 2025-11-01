@@ -33,37 +33,50 @@ defmodule JobRunner.Queue do
 
   @impl GenServer
   def init(opts) when is_map(opts) do
-    queue_pid = self()
-
     for _ <- 1..opts.pool_size do
-      {:ok, _worker_pid} =
-        DynamicSupervisor.start_child(
-          opts.worker_supervisor,
-          {JobRunner.Worker,
-           [
-             on_start: fn worker_pid ->
-               :pg.join(queue_pid, worker_pid)
-               :ok
-             end
-           ]}
-        )
+      {:ok, _worker_pid} = start_worker(opts.worker_supervisor)
     end
 
     Logger.info("Started worker pool with size #{opts.pool_size}")
 
-    # Monitor the process group for worker joins and leaves
+    # Monitor the process group for leaving workers (crashed workers),
     # so we can react to worker restarts.
-    :pg.monitor(queue_pid)
+    :pg.monitor(self())
 
     {:ok, %State{config: opts}}
   end
 
-  def enqueue(pid, task) when is_pid(pid) and is_function(task),
+  defp start_worker(worker_supervisor) do
+    queue_pid = self()
+
+    DynamicSupervisor.start_child(
+      worker_supervisor,
+      {JobRunner.Worker,
+       [
+         on_start: fn worker_pid ->
+           :pg.join(queue_pid, worker_pid)
+           :ok
+         end
+       ]}
+    )
+  end
+
+  def async_enqueue(pid, task) when is_pid(pid) and is_function(task),
     do: GenServer.cast(pid, {:enqueue, task})
+
+  def enqueue(pid, task, timeout \\ 5_000) when is_pid(pid) and is_function(task),
+    do: GenServer.call(pid, {:enqueue, task}, timeout)
+
+  @impl GenServer
+  def handle_call({:enqueue, task}, from, state) when is_function(task) do
+    queue = :queue.in({task, from}, state.queue)
+    send(self(), :dequeue)
+    {:noreply, %{state | queue: queue}}
+  end
 
   @impl GenServer
   def handle_cast({:enqueue, task}, state) when is_function(task) do
-    queue = :queue.in(task, state.queue)
+    queue = :queue.in({task, nil}, state.queue)
     send(self(), :dequeue)
     {:noreply, %{state | queue: queue}}
   end
@@ -98,7 +111,8 @@ defmodule JobRunner.Queue do
   @impl GenServer
   def handle_info({:task_complete, worker_pid, monitor}, state) do
     # Task was completed successfully, demonitor the worker process and
-    # remove it from the tasks in progress.
+    # remove it from the tasks in progress. Now that a worker is free, we
+    # can try to dequeue another task.
     Process.demonitor(monitor)
     tasks_in_progress = Map.delete(state.tasks_in_progress, worker_pid)
     {:noreply, %{state | tasks_in_progress: tasks_in_progress}, {:continue, :dequeue}}
@@ -138,9 +152,16 @@ defmodule JobRunner.Queue do
     queue_pid = self()
     monitor = Process.monitor(worker_pid)
 
+    {task_fun, maybe_from} = task
+
     Worker.work_on_task(worker_pid, fn ->
-      result = task.()
+      result = task_fun.()
       send(queue_pid, {:task_complete, worker_pid, monitor})
+
+      if not is_nil(maybe_from) do
+        GenServer.reply(maybe_from, result)
+      end
+
       result
     end)
 
