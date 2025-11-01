@@ -21,19 +21,19 @@ defmodule JobRunner.Queue do
     end
   end
 
+  def default_config,
+    do: %{
+      pool_size: 5
+    }
+
   def start_link(opts) do
     {name, opts} = Keyword.pop(opts, :name)
+    dbg(opts)
     GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
-  @default_config %{
-    pool_size: 5
-  }
-
   @impl GenServer
   def init(opts) when is_map(opts) do
-    opts = Map.merge(@default_config, opts)
-
     queue_pid = self()
 
     for _ <- 1..opts.pool_size do

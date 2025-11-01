@@ -16,11 +16,14 @@ defmodule JobRunner do
     :world
   end
 
-  def start_queue(queue_name) do
+  def start_queue(
+        queue_name,
+        config \\ JobRunner.Queue.default_config()
+      ) do
     {:ok, _pid} =
       DynamicSupervisor.start_child(
         JobRunner.QueuesSupervisor,
-        {JobRunner.QueueSupervisor, [queue_name]}
+        {JobRunner.QueueSupervisor, [queue_name: queue_name, config: config]}
       )
 
     case Registry.lookup(JobRunner.Registry, {:queue, queue_name}) do
