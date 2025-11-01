@@ -59,8 +59,10 @@ defmodule JobRunner.QueueTest do
     test_pid = self()
     agent = start_supervised!({Agent, fn -> 0 end})
 
+    increment = &(&1 + 1)
+
     poison_task = fn ->
-      state = Agent.get_and_update(agent, &{&1, fn s -> s + 1 end})
+      state = Agent.get_and_update(agent, &{&1, increment})
 
       if state == 0 do
         raise "Simulated task failure"
