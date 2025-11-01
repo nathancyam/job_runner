@@ -28,7 +28,6 @@ defmodule JobRunner.Queue do
 
   def start_link(opts) do
     {name, opts} = Keyword.pop(opts, :name)
-    dbg(opts)
     GenServer.start_link(__MODULE__, Map.new(opts), name: name)
   end
 
