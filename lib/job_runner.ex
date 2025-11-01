@@ -16,7 +16,23 @@ defmodule JobRunner do
     :world
   end
 
-  def demo(tasks, opts \\ [force_failure?: false]) do
+  def start_queue(queue_name) do
+    {:ok, _pid} =
+      DynamicSupervisor.start_child(
+        JobRunner.QueuesSupervisor,
+        {JobRunner.QueueSupervisor, [queue_name]}
+      )
+
+    case Registry.lookup(JobRunner.Registry, {:queue, queue_name}) do
+      [] ->
+        {:error, :queue_not_found}
+
+      [{pid, _value}] ->
+        {:ok, pid}
+    end
+  end
+
+  def demo(queue_pid, tasks, opts \\ [force_failure?: false]) do
     for i <- 1..tasks do
       task =
         fn ->
@@ -35,7 +51,7 @@ defmodule JobRunner do
           :ok
         end
 
-      JobRunner.Queue.enqueue(task)
+      JobRunner.Queue.enqueue(queue_pid, task)
     end
   end
 end

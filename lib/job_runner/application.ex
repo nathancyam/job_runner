@@ -11,8 +11,8 @@ defmodule JobRunner.Application do
       # Starts a worker by calling: JobRunner.Worker.start_link(arg)
       # {JobRunner.Worker, arg}
       %{id: :pg, start: {:pg, :start_link, []}},
-      JobRunner.WorkerSupervisor,
-      JobRunner.Queue
+      {Registry, keys: :unique, name: JobRunner.Registry},
+      {DynamicSupervisor, strategy: :one_for_one, name: JobRunner.QueuesSupervisor}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

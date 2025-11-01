@@ -21,7 +21,10 @@ defmodule JobRunner.Queue do
     end
   end
 
-  def start_link(opts), do: GenServer.start_link(__MODULE__, Map.new(opts), name: __MODULE__)
+  def start_link(opts) do
+    {name, opts} = Keyword.pop(opts, :name)
+    GenServer.start_link(__MODULE__, Map.new(opts), name: name)
+  end
 
   @default_config %{
     pool_size: 5
@@ -36,7 +39,7 @@ defmodule JobRunner.Queue do
     for _ <- 1..opts.pool_size do
       {:ok, _worker_pid} =
         DynamicSupervisor.start_child(
-          JobRunner.WorkerSupervisor,
+          opts.worker_supervisor,
           {JobRunner.Worker,
            [
              on_start: fn worker_pid ->
@@ -56,7 +59,8 @@ defmodule JobRunner.Queue do
     {:ok, %State{config: opts}}
   end
 
-  def enqueue(task) when is_function(task), do: GenServer.cast(__MODULE__, {:enqueue, task})
+  def enqueue(pid, task) when is_pid(pid) and is_function(task),
+    do: GenServer.cast(pid, {:enqueue, task})
 
   @impl GenServer
   def handle_cast({:enqueue, task}, state) when is_function(task) do
