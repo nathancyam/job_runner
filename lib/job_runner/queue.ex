@@ -1,4 +1,9 @@
 defmodule JobRunner.Queue do
+  @moduledoc """
+  A GenServer-based job queue that starts and manages a pool of worker processes to
+  execute tasks asynchronously.
+  """
+
   use GenServer
 
   require Logger
@@ -6,6 +11,8 @@ defmodule JobRunner.Queue do
   alias JobRunner.Worker
 
   defmodule State do
+    @moduledoc false
+
     defstruct queue: :queue.new(), config: %{}, tasks_in_progress: %{}
 
     def recover_and_requeue(%State{} = state, worker_pid) when is_pid(worker_pid) do
@@ -61,9 +68,16 @@ defmodule JobRunner.Queue do
     )
   end
 
+  @doc """
+  Enqueue a task to be executed asynchronously by the queue.
+  """
   def async_enqueue(pid, task) when is_pid(pid) and is_function(task),
     do: GenServer.cast(pid, {:enqueue, task})
 
+  @doc """
+  Enqueue a task to be executed by the queue and wait for its result.
+  Default timeout is 5 seconds.
+  """
   def enqueue(pid, task, timeout \\ 5_000) when is_pid(pid) and is_function(task),
     do: GenServer.call(pid, {:enqueue, task}, timeout)
 
@@ -85,7 +99,7 @@ defmodule JobRunner.Queue do
   def handle_info(:dequeue, %{queue: queue, tasks_in_progress: tasks_in_progress} = state) do
     busy_workers = Map.keys(tasks_in_progress)
 
-    # Are there any available workers by checking the process group members?
+    # Are there any available workers in the process group?
     case :pg.get_members(self()) -- busy_workers do
       [] ->
         {:noreply, state}
@@ -120,7 +134,9 @@ defmodule JobRunner.Queue do
 
   def handle_info({:DOWN, _ref, :process, worker_pid, _reason}, state) do
     # Worker process crashed, retrieve the task it was working on (if any)
-    # and enqueue it. The worker should be restarted by the supervisor.
+    # and enqueue it. The worker should be restarted by the supervisor and
+    # re-join the process group. This will trigger the `:join` message and
+    # start processing any pending tasks.
     state = State.recover_and_requeue(state, worker_pid)
     {:noreply, state, {:continue, :dequeue}}
   end
