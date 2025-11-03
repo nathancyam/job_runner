@@ -91,7 +91,7 @@ defmodule JobRunner.QueueTest do
     assert result == 42
   end
 
-  test "spins up temporary workers", %{pid: pid} do
+  test "spins up temporary workers and drains them when inactive", %{pid: pid} do
     :pg.monitor({pid, :temporary_workers})
 
     on_exit(fn -> :pg.leave({pid, :temporary_workers}, self()) end)
@@ -105,7 +105,9 @@ defmodule JobRunner.QueueTest do
             :ok
           end
 
-          Queue.enqueue(pid, task_fun)
+          capture_log(fn ->
+            Queue.enqueue(pid, task_fun)
+          end)
         end,
         timeout: :infinity
       )
@@ -114,5 +116,9 @@ defmodule JobRunner.QueueTest do
 
     assert_receive {_ref, :join, {^pid, :temporary_workers}, joined_pids}
     assert length(joined_pids) > 0
+
+    Process.sleep(1_000)
+
+    assert Enum.empty?(:pg.get_members({pid, :temporary_workers}))
   end
 end
