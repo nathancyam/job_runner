@@ -20,10 +20,12 @@ defmodule JobRunner do
         queue_name,
         config \\ JobRunner.Queue.default_config()
       ) do
+    merged_config = Map.merge(JobRunner.Queue.default_config(), config)
+
     {:ok, _pid} =
       DynamicSupervisor.start_child(
         JobRunner.QueuesSupervisor,
-        {JobRunner.QueueSupervisor, [queue_name: queue_name, config: config]}
+        {JobRunner.QueueSupervisor, [queue_name: queue_name, config: merged_config]}
       )
 
     case Registry.lookup(JobRunner.Registry, {:queue, queue_name}) do

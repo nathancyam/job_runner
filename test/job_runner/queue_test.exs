@@ -13,7 +13,10 @@ defmodule JobRunner.QueueTest do
             {DynamicSupervisor, name: __MODULE__.WorkerSupervisor, strategy: :one_for_one}
           )
 
-        start_supervised!({Queue, name: __MODULE__, pool_size: 1, worker_supervisor: worker_sup})
+        start_supervised!(
+          {Queue,
+           name: __MODULE__, pool_size: 1, max_temporary_workers: 5, worker_supervisor: worker_sup}
+        )
       end)
 
     {:ok, pid: pid}
@@ -86,5 +89,30 @@ defmodule JobRunner.QueueTest do
 
     result = Queue.enqueue(pid, task_fun)
     assert result == 42
+  end
+
+  test "spins up temporary workers", %{pid: pid} do
+    :pg.monitor({pid, :temporary_workers})
+
+    on_exit(fn -> :pg.leave({pid, :temporary_workers}, self()) end)
+
+    stream =
+      Task.async_stream(
+        0..20,
+        fn _ ->
+          task_fun = fn ->
+            Process.sleep(100)
+            :ok
+          end
+
+          Queue.enqueue(pid, task_fun)
+        end,
+        timeout: :infinity
+      )
+
+    Enum.to_list(stream)
+
+    assert_receive {_ref, :join, {^pid, :temporary_workers}, joined_pids}
+    assert length(joined_pids) > 0
   end
 end

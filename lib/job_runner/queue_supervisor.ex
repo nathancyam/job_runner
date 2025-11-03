@@ -25,7 +25,12 @@ defmodule JobRunner.QueueSupervisor do
     children = [
       {JobRunner.WorkerSupervisor, name: supervisor_name},
       {JobRunner.Queue,
-       [pool_size: config.pool_size, name: queue_name, worker_supervisor: supervisor_name]}
+       [
+         pool_size: config.pool_size,
+         max_temporary_workers: config.max_temporary_workers,
+         name: queue_name,
+         worker_supervisor: supervisor_name
+       ]}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

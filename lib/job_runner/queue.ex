@@ -30,7 +30,8 @@ defmodule JobRunner.Queue do
 
   def default_config,
     do: %{
-      pool_size: 5
+      pool_size: 5,
+      max_temporary_workers: 10
     }
 
   def start_link(opts) do
@@ -49,11 +50,12 @@ defmodule JobRunner.Queue do
     # Monitor the process group for leaving workers (crashed workers),
     # so we can react to worker restarts.
     :pg.monitor(self())
+    :pg.monitor({self(), :temporary_workers})
 
     {:ok, %State{config: opts}}
   end
 
-  defp start_worker(worker_supervisor) do
+  defp start_worker(worker_supervisor, worker_type \\ :default) do
     queue_pid = self()
 
     DynamicSupervisor.start_child(
@@ -62,6 +64,11 @@ defmodule JobRunner.Queue do
        [
          on_start: fn worker_pid ->
            :pg.join(queue_pid, worker_pid)
+
+           if worker_type == :temporary do
+             :pg.join({queue_pid, :temporary_workers}, worker_pid)
+           end
+
            :ok
          end
        ]}
@@ -102,7 +109,11 @@ defmodule JobRunner.Queue do
     # Are there any available workers in the process group?
     case :pg.get_members(self()) -- busy_workers do
       [] ->
-        {:noreply, state}
+        if can_spawn_temp_workers?(state) do
+          {:noreply, state, {:continue, :start_temp_worker}}
+        else
+          {:noreply, state}
+        end
 
       available_workers ->
         worker = Enum.random(available_workers)
@@ -185,4 +196,30 @@ defmodule JobRunner.Queue do
   end
 
   def handle_continue(:dequeue, state), do: handle_info(:dequeue, state)
+
+  def handle_continue(:start_temp_worker, state) do
+    %{config: %{max_temporary_workers: max_temp_workers, worker_supervisor: sup}} = state
+
+    current_temp_workers =
+      length(:pg.get_members({self(), :temporary_workers}))
+
+    if current_temp_workers < max_temp_workers do
+      {:ok, pid} = start_worker(sup, :temporary)
+
+      Logger.info(
+        "Started temporary worker #{inspect(pid)}. Current temporary workers: #{current_temp_workers + 1}"
+      )
+    end
+
+    {:noreply, state, {:continue, :dequeue}}
+  end
+
+  defp can_spawn_temp_workers?(
+         %State{config: %{max_temporary_workers: max_temp_workers}} = _state
+       ) do
+    current_temp_workers =
+      length(:pg.get_members({self(), :temporary_workers}))
+
+    current_temp_workers < max_temp_workers
+  end
 end
