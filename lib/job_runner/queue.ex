@@ -69,7 +69,7 @@ defmodule JobRunner.Queue do
              :pg.join({queue_pid, :temporary_workers}, worker_pid)
            end
 
-           :ok
+           {:ok, worker_type}
          end
        ]}
     )
@@ -128,7 +128,7 @@ defmodule JobRunner.Queue do
             {:noreply, state, {:continue, {:run_task, worker, task}}}
 
           {:empty, _} ->
-            {:noreply, state}
+            {:noreply, state, {:continue, :drain_temp_workers}}
         end
     end
   end
@@ -212,6 +212,18 @@ defmodule JobRunner.Queue do
     end
 
     {:noreply, state, {:continue, :dequeue}}
+  end
+
+  def handle_continue(:drain_temp_workers, state) do
+    current_temp_workers =
+      :pg.get_members({self(), :temporary_workers})
+
+    for worker <- current_temp_workers do
+      Logger.info("Stopping temporary worker #{inspect(worker)} due to low load")
+      Process.exit(worker, :normal)
+    end
+
+    {:noreply, state}
   end
 
   defp can_spawn_temp_workers?(
