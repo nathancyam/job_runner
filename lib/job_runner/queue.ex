@@ -173,6 +173,15 @@ defmodule JobRunner.Queue do
 
     {task_fun, maybe_from} = task
 
+    # When there's an available worker after assigning a task,
+    # dequeue the next one to to keep the workers busy. This is
+    # especially important when we have temporary workers that need
+    # to be kept active to prevent them from shutting down due to idle
+    # timeouts.
+    if is_pid(get_random_available_worker(state)) do
+      send(self(), :dequeue)
+    end
+
     Worker.work_on_task(worker_pid, fn ->
       result = task_fun.()
       send(queue_pid, {:task_complete, worker_pid, monitor})
@@ -183,10 +192,6 @@ defmodule JobRunner.Queue do
 
       result
     end)
-
-    if is_pid(get_random_available_worker(state)) do
-      send(self(), :dequeue)
-    end
 
     {:noreply, state}
   end
@@ -226,7 +231,8 @@ defmodule JobRunner.Queue do
     )
   end
 
-  def get_random_available_worker(%{tasks_in_progress: tasks_in_progress} = _state) do
+  @spec get_random_available_worker(State.t()) :: pid() | nil
+  defp get_random_available_worker(%{tasks_in_progress: tasks_in_progress} = _state) do
     busy_workers = Map.keys(tasks_in_progress)
 
     case :pg.get_members(self()) -- busy_workers do
@@ -235,6 +241,7 @@ defmodule JobRunner.Queue do
     end
   end
 
+  @spec can_spawn_temp_workers?(State.t()) :: boolean()
   defp can_spawn_temp_workers?(
          %State{
            queue: queue,

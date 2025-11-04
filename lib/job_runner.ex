@@ -54,13 +54,11 @@ defmodule JobRunner do
             raise "Forced failure for task #{i}"
           end
 
-          time = Enum.random(1000..5000)
-
           if Enum.random(1..20) == 1 do
             raise "Simulated task failure for task #{i}"
           end
 
-          :timer.sleep(time)
+          :timer.sleep(Enum.random(1000..3000))
           IO.puts("Task #{i} completed")
           :ok
         end
