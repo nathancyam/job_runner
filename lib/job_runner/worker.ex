@@ -24,7 +24,13 @@ defmodule JobRunner.Worker do
           :permanent
       end
 
-    {:ok, %{tasks_completed: 0, worker_type: worker_type, config: worker_config}}
+    {:ok,
+     %{
+       tasks_completed: 0,
+       worker_type: worker_type,
+       config: worker_config,
+       started_at: DateTime.utc_now()
+     }}
   end
 
   def work_on_task(worker_pid, task) when is_function(task) do
@@ -57,6 +63,7 @@ defmodule JobRunner.Worker do
   def handle_info(:timeout, state) do
     Logger.info(%{
       message: "Temporary worker shutting down after idle timeout",
+      alive_for: DateTime.diff(DateTime.utc_now(), state.started_at, :second),
       completed_tasks: state.tasks_completed
     })
 
@@ -77,7 +84,7 @@ defmodule JobRunner.Worker do
       reason ->
         Logger.info(%{
           worker_type: state.worker_type,
-          message: "Worker terminated from #{reason}",
+          message: "Worker terminated with reason: #{reason}",
           completed_tasks: state.tasks_completed
         })
     end

@@ -18,20 +18,23 @@ defmodule JobRunner.QueueSupervisor do
   end
 
   @impl Supervisor
-  def init(%{queue_name: queue_name, config: config}) when is_binary(queue_name) do
+  def init(%{queue_name: queue_name, config: config})
+      when is_binary(queue_name) and is_map(config) do
     queue_name = {:via, Registry, {@registry, {:queue, queue_name}}}
     supervisor_name = {:via, Registry, {@registry, {:worker_supervisor, queue_name}}}
 
+    queue_params =
+      Keyword.merge(
+        [
+          name: queue_name,
+          worker_supervisor: supervisor_name
+        ],
+        Keyword.new(config)
+      )
+
     children = [
       {JobRunner.WorkerSupervisor, name: supervisor_name},
-      {JobRunner.Queue,
-       [
-         pool_size: config.pool_size,
-         temporary_max_workers: config.temporary_max_workers,
-         temporary_worker_idle_timeout: config.temporary_worker_idle_timeout,
-         name: queue_name,
-         worker_supervisor: supervisor_name
-       ]}
+      {JobRunner.Queue, queue_params}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

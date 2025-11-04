@@ -13,7 +13,19 @@ defmodule JobRunner.Queue do
   defmodule State do
     @moduledoc false
 
-    defstruct queue: :queue.new(), config: %{}, tasks_in_progress: %{}
+    @type task :: {function(), GenServer.from() | nil}
+
+    @type t :: %__MODULE__{
+            queue: :queue.queue(task()),
+            config: map(),
+            tasks_in_progress: %{optional(pid()) => task()},
+            last_temp_worker_spawned_at: DateTime.t() | nil
+          }
+
+    defstruct queue: :queue.new(),
+              config: %{},
+              tasks_in_progress: %{},
+              last_temp_worker_spawned_at: nil
 
     def recover_and_requeue(%State{} = state, worker_pid) when is_pid(worker_pid) do
       {task, tasks_in_progress} = Map.pop(state.tasks_in_progress, worker_pid)
@@ -32,7 +44,8 @@ defmodule JobRunner.Queue do
     do: %{
       pool_size: 5,
       temporary_max_workers: 10,
-      temporary_worker_idle_timeout: to_timeout(second: 3)
+      temporary_worker_idle_timeout: to_timeout(second: 3),
+      queue_high_watermark: 50
     }
 
   def start_link(opts) do
@@ -54,28 +67,6 @@ defmodule JobRunner.Queue do
     :pg.monitor({self(), :temporary_workers})
 
     {:ok, %State{config: opts}}
-  end
-
-  defp start_worker(worker_supervisor, worker_type, config)
-       when worker_type in [:permanent, :temporary] do
-    queue_pid = self()
-
-    DynamicSupervisor.start_child(
-      worker_supervisor,
-      {JobRunner.Worker,
-       [
-         on_start: fn worker_pid ->
-           :pg.join(queue_pid, worker_pid)
-
-           if worker_type == :temporary do
-             :pg.join({queue_pid, :temporary_workers}, worker_pid)
-             {:ok, %{type: worker_type, idle_timeout: config.temporary_worker_idle_timeout}}
-           else
-             {:ok, %{type: worker_type, idle_timeout: nil}}
-           end
-         end
-       ]}
-    )
   end
 
   @doc """
@@ -112,17 +103,12 @@ defmodule JobRunner.Queue do
     # Are there any available workers in the process group?
     case :pg.get_members(self()) -- busy_workers do
       [] ->
-        if can_spawn_temp_workers?(state) do
-          {:noreply, state, {:continue, :start_temp_worker}}
-        else
-          {:noreply, state}
-        end
+        {:noreply, state}
 
       available_workers ->
-        worker = Enum.random(available_workers)
-
         case :queue.out(queue) do
           {{:value, task}, new_queue} ->
+            worker = Enum.random(available_workers)
             tasks_in_progress = Map.put(tasks_in_progress, worker, task)
             state = %{state | queue: new_queue, tasks_in_progress: tasks_in_progress}
 
@@ -143,7 +129,15 @@ defmodule JobRunner.Queue do
     # can try to dequeue another task.
     Process.demonitor(monitor)
     tasks_in_progress = Map.delete(state.tasks_in_progress, worker_pid)
-    {:noreply, %{state | tasks_in_progress: tasks_in_progress}, {:continue, :dequeue}}
+
+    next_continue =
+      if can_spawn_temp_workers?(state) do
+        :start_temp_worker
+      else
+        :dequeue
+      end
+
+    {:noreply, %{state | tasks_in_progress: tasks_in_progress}, {:continue, next_continue}}
   end
 
   def handle_info({:DOWN, _ref, :process, worker_pid, _reason}, state) do
@@ -162,8 +156,6 @@ defmodule JobRunner.Queue do
     # When a worker joins the queue process group, this implies that a new
     # worker was started as one crashed previously. We send the queue process
     # to process any pending tasks now that we have a worker available.
-    #
-    # TODO: Maybe add some threshold here to only start processing if we have enough workers
     if map_size(tasks_in_progress) == 0 and :queue.len(queue) > 0 do
       send(self(), :dequeue)
     end
@@ -172,8 +164,8 @@ defmodule JobRunner.Queue do
   end
 
   def handle_info({_ref, :leave, _group, _leaving_pids}, state) do
-    # Since we monitor each worker when assigning it as task, there isn't
-    # any need to do anything here.
+    # Since we monitor each worker when assigning a task, there isn't any need
+    # to do anything here.
     {:noreply, state}
   end
 
@@ -200,27 +192,63 @@ defmodule JobRunner.Queue do
 
   def handle_continue(:dequeue, state), do: handle_info(:dequeue, state)
 
-  def handle_continue(:start_temp_worker, state) do
-    %{config: %{temporary_max_workers: max_temp_workers, worker_supervisor: sup}} = state
+  def handle_continue(:start_temp_worker, %State{} = state) do
+    %{config: %{worker_supervisor: sup}} = state
 
     current_temp_workers =
       length(:pg.get_members({self(), :temporary_workers}))
 
-    if current_temp_workers < max_temp_workers do
-      {:ok, pid} = start_worker(sup, :temporary, state.config)
+    {:ok, pid} = start_worker(sup, :temporary, state.config)
 
-      Logger.info(
-        "Started temporary worker #{inspect(pid)}. Current temporary workers: #{current_temp_workers + 1}"
-      )
-    end
+    Logger.info(%{
+      message: "Started temporary worker",
+      pid: inspect(pid),
+      current_temporary_workers: current_temp_workers + 1
+    })
 
-    {:noreply, state, {:continue, :dequeue}}
+    {:noreply, %{state | last_temp_worker_spawned_at: DateTime.utc_now(:millisecond)},
+     {:continue, :dequeue}}
   end
 
-  defp can_spawn_temp_workers?(%State{config: %{temporary_max_workers: max_workers}} = _state) do
-    current_temp_workers =
-      length(:pg.get_members({self(), :temporary_workers}))
+  @spec start_worker(any(), :permanent | :temporary, map()) ::
+          {:ok, pid()} | {:error, any()}
+  defp start_worker(worker_supervisor, worker_type, config)
+       when worker_type in [:permanent, :temporary] do
+    queue_pid = self()
 
-    current_temp_workers < max_workers
+    DynamicSupervisor.start_child(
+      worker_supervisor,
+      {JobRunner.Worker,
+       [
+         on_start: fn worker_pid ->
+           :pg.join(queue_pid, worker_pid)
+
+           if worker_type == :temporary do
+             :pg.join({queue_pid, :temporary_workers}, worker_pid)
+             {:ok, %{type: worker_type, idle_timeout: config.temporary_worker_idle_timeout}}
+           else
+             {:ok, %{type: worker_type, idle_timeout: nil}}
+           end
+         end
+       ]}
+    )
+  end
+
+  defp can_spawn_temp_workers?(
+         %State{
+           queue: queue,
+           config: %{temporary_max_workers: max_workers, queue_high_watermark: high_watermark},
+           last_temp_worker_spawned_at: time_since_last_spawn
+         } = _state
+       ) do
+    below_max_workers? = length(:pg.get_members({self(), :temporary_workers})) < max_workers
+
+    enough_time_passed? =
+      is_nil(time_since_last_spawn) or
+        DateTime.diff(DateTime.utc_now(:millisecond), time_since_last_spawn, :millisecond) > 500
+
+    above_high_watermark? = :queue.len(queue) > high_watermark
+
+    enough_time_passed? and below_max_workers? and above_high_watermark?
   end
 end
