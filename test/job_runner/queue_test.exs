@@ -15,7 +15,13 @@ defmodule JobRunner.QueueTest do
 
         start_supervised!(
           {Queue,
-           name: __MODULE__, pool_size: 1, max_temporary_workers: 5, worker_supervisor: worker_sup}
+           name: __MODULE__,
+           pool_size: 1,
+           temporary_max_workers: 5,
+           queue_high_watermark: 1,
+           temporary_worker_idle_timeout: 100,
+           temporary_worker_spawn_interval: 100,
+           worker_supervisor: worker_sup}
         )
       end)
 
