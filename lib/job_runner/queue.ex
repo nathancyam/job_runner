@@ -45,6 +45,7 @@ defmodule JobRunner.Queue do
       pool_size: 5,
       temporary_max_workers: 10,
       temporary_worker_idle_timeout: to_timeout(second: 3),
+      temporary_worker_spawn_interval: 500,
       queue_high_watermark: 50
     }
 
@@ -98,17 +99,13 @@ defmodule JobRunner.Queue do
 
   @impl GenServer
   def handle_info(:dequeue, %{queue: queue, tasks_in_progress: tasks_in_progress} = state) do
-    busy_workers = Map.keys(tasks_in_progress)
-
-    # Are there any available workers in the process group?
-    case :pg.get_members(self()) -- busy_workers do
-      [] ->
+    case get_random_available_worker(state) do
+      nil ->
         {:noreply, state}
 
-      available_workers ->
+      worker ->
         case :queue.out(queue) do
           {{:value, task}, new_queue} ->
-            worker = Enum.random(available_workers)
             tasks_in_progress = Map.put(tasks_in_progress, worker, task)
             state = %{state | queue: new_queue, tasks_in_progress: tasks_in_progress}
 
@@ -187,6 +184,10 @@ defmodule JobRunner.Queue do
       result
     end)
 
+    if is_pid(get_random_available_worker(state)) do
+      send(self(), :dequeue)
+    end
+
     {:noreply, state}
   end
 
@@ -195,16 +196,7 @@ defmodule JobRunner.Queue do
   def handle_continue(:start_temp_worker, %State{} = state) do
     %{config: %{worker_supervisor: sup}} = state
 
-    current_temp_workers =
-      length(:pg.get_members({self(), :temporary_workers}))
-
-    {:ok, pid} = start_worker(sup, :temporary, state.config)
-
-    Logger.info(%{
-      message: "Started temporary worker",
-      pid: inspect(pid),
-      current_temporary_workers: current_temp_workers + 1
-    })
+    {:ok, _pid} = start_worker(sup, :temporary, state.config)
 
     {:noreply, %{state | last_temp_worker_spawned_at: DateTime.utc_now(:millisecond)},
      {:continue, :dequeue}}
@@ -234,18 +226,32 @@ defmodule JobRunner.Queue do
     )
   end
 
+  def get_random_available_worker(%{tasks_in_progress: tasks_in_progress} = _state) do
+    busy_workers = Map.keys(tasks_in_progress)
+
+    case :pg.get_members(self()) -- busy_workers do
+      [] -> nil
+      available_workers -> Enum.random(available_workers)
+    end
+  end
+
   defp can_spawn_temp_workers?(
          %State{
            queue: queue,
-           config: %{temporary_max_workers: max_workers, queue_high_watermark: high_watermark},
+           config: %{
+             temporary_max_workers: max_workers,
+             queue_high_watermark: high_watermark,
+             temporary_worker_spawn_interval: interval
+           },
            last_temp_worker_spawned_at: time_since_last_spawn
          } = _state
        ) do
-    below_max_workers? = length(:pg.get_members({self(), :temporary_workers})) < max_workers
-
     enough_time_passed? =
       is_nil(time_since_last_spawn) or
-        DateTime.diff(DateTime.utc_now(:millisecond), time_since_last_spawn, :millisecond) > 500
+        DateTime.diff(DateTime.utc_now(:millisecond), time_since_last_spawn, :millisecond) >
+          interval
+
+    below_max_workers? = length(:pg.get_members({self(), :temporary_workers})) < max_workers
 
     above_high_watermark? = :queue.len(queue) > high_watermark
 
