@@ -61,9 +61,14 @@ defmodule JobRunner.Worker do
   end
 
   def handle_info(:timeout, state) do
+    seconds_alive =
+      DateTime.diff(DateTime.utc_now(), state.started_at, :second)
+      |> then(&Duration.new!(second: &1))
+      |> Duration.to_string()
+
     Logger.info(%{
       message: "Temporary worker shutting down after idle timeout",
-      alive_for: DateTime.diff(DateTime.utc_now(), state.started_at, :second),
+      alive_for: seconds_alive,
       completed_tasks: state.tasks_completed
     })
 
