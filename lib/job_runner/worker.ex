@@ -9,22 +9,22 @@ defmodule JobRunner.Worker do
 
   @impl GenServer
   def init(opts) do
-    maybe_worker_type =
+    {:ok, worker_config} =
       if on_start = Keyword.get(opts, :on_start) do
         on_start.(self())
       end
 
     worker_type =
-      case maybe_worker_type do
-        {:ok, :temporary} ->
+      case worker_config do
+        %{type: :temporary} ->
           Process.flag(:trap_exit, true)
           :temporary
 
         _ ->
-          :default
+          :permanent
       end
 
-    {:ok, %{tasks_completed: 0, worker_type: worker_type}}
+    {:ok, %{tasks_completed: 0, worker_type: worker_type, config: worker_config}}
   end
 
   def work_on_task(worker_pid, task) when is_function(task) do
@@ -33,8 +33,20 @@ defmodule JobRunner.Worker do
 
   @impl GenServer
   def handle_cast({:work_on_task, task}, state) do
+    %{worker_type: worker_type} = state
     task.()
-    {:noreply, %{state | tasks_completed: state.tasks_completed + 1}}
+
+    new_state = %{state | tasks_completed: state.tasks_completed + 1}
+
+    case worker_type do
+      :temporary ->
+        # Temporary workers shut down when in an inactive state.
+        jitter = Enum.random(50..500)
+        {:noreply, new_state, state.config.idle_timeout + jitter}
+
+      :permanent ->
+        {:noreply, new_state}
+    end
   end
 
   @impl GenServer
@@ -42,11 +54,33 @@ defmodule JobRunner.Worker do
     {:stop, reason, state}
   end
 
+  def handle_info(:timeout, state) do
+    Logger.info(%{
+      message: "Temporary worker shutting down after idle timeout",
+      completed_tasks: state.tasks_completed
+    })
+
+    {:stop, :normal, state}
+  end
+
   @impl GenServer
-  def terminate(_reason, state) do
-    Logger.info(
-      "Worker #{state.worker_type} terminating after completing #{state.tasks_completed} tasks"
-    )
+  def terminate(reason, state) do
+    case reason do
+      {%error_struct{message: message}, _stacktrace} ->
+        Logger.warning(%{
+          worker_type: state.worker_type,
+          message:
+            "Worker terminated unexpectedly from #{inspect(error_struct)}: #{inspect(message)}",
+          completed_tasks: state.tasks_completed
+        })
+
+      reason ->
+        Logger.info(%{
+          worker_type: state.worker_type,
+          message: "Worker terminated from #{reason}",
+          completed_tasks: state.tasks_completed
+        })
+    end
 
     :ok
   end

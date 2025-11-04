@@ -31,7 +31,8 @@ defmodule JobRunner.Queue do
   def default_config,
     do: %{
       pool_size: 5,
-      max_temporary_workers: 10
+      temporary_max_workers: 10,
+      temporary_worker_idle_timeout: to_timeout(second: 3)
     }
 
   def start_link(opts) do
@@ -42,7 +43,7 @@ defmodule JobRunner.Queue do
   @impl GenServer
   def init(opts) when is_map(opts) do
     for _ <- 1..opts.pool_size do
-      {:ok, _worker_pid} = start_worker(opts.worker_supervisor)
+      {:ok, _worker_pid} = start_worker(opts.worker_supervisor, :permanent, opts)
     end
 
     Logger.info("Started worker pool with size #{opts.pool_size}")
@@ -55,7 +56,8 @@ defmodule JobRunner.Queue do
     {:ok, %State{config: opts}}
   end
 
-  defp start_worker(worker_supervisor, worker_type \\ :default) do
+  defp start_worker(worker_supervisor, worker_type, config)
+       when worker_type in [:permanent, :temporary] do
     queue_pid = self()
 
     DynamicSupervisor.start_child(
@@ -67,9 +69,10 @@ defmodule JobRunner.Queue do
 
            if worker_type == :temporary do
              :pg.join({queue_pid, :temporary_workers}, worker_pid)
+             {:ok, %{type: worker_type, idle_timeout: config.temporary_worker_idle_timeout}}
+           else
+             {:ok, %{type: worker_type, idle_timeout: nil}}
            end
-
-           {:ok, worker_type}
          end
        ]}
     )
@@ -128,7 +131,7 @@ defmodule JobRunner.Queue do
             {:noreply, state, {:continue, {:run_task, worker, task}}}
 
           {:empty, _} ->
-            {:noreply, state, {:continue, :drain_temp_workers}}
+            {:noreply, state}
         end
     end
   end
@@ -198,13 +201,13 @@ defmodule JobRunner.Queue do
   def handle_continue(:dequeue, state), do: handle_info(:dequeue, state)
 
   def handle_continue(:start_temp_worker, state) do
-    %{config: %{max_temporary_workers: max_temp_workers, worker_supervisor: sup}} = state
+    %{config: %{temporary_max_workers: max_temp_workers, worker_supervisor: sup}} = state
 
     current_temp_workers =
       length(:pg.get_members({self(), :temporary_workers}))
 
     if current_temp_workers < max_temp_workers do
-      {:ok, pid} = start_worker(sup, :temporary)
+      {:ok, pid} = start_worker(sup, :temporary, state.config)
 
       Logger.info(
         "Started temporary worker #{inspect(pid)}. Current temporary workers: #{current_temp_workers + 1}"
@@ -214,24 +217,10 @@ defmodule JobRunner.Queue do
     {:noreply, state, {:continue, :dequeue}}
   end
 
-  def handle_continue(:drain_temp_workers, state) do
-    current_temp_workers =
-      :pg.get_members({self(), :temporary_workers})
-
-    for worker <- current_temp_workers do
-      Logger.info("Stopping temporary worker #{inspect(worker)} due to low load")
-      Process.exit(worker, :normal)
-    end
-
-    {:noreply, state}
-  end
-
-  defp can_spawn_temp_workers?(
-         %State{config: %{max_temporary_workers: max_temp_workers}} = _state
-       ) do
+  defp can_spawn_temp_workers?(%State{config: %{temporary_max_workers: max_workers}} = _state) do
     current_temp_workers =
       length(:pg.get_members({self(), :temporary_workers}))
 
-    current_temp_workers < max_temp_workers
+    current_temp_workers < max_workers
   end
 end

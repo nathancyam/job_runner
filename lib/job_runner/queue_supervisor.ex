@@ -27,7 +27,8 @@ defmodule JobRunner.QueueSupervisor do
       {JobRunner.Queue,
        [
          pool_size: config.pool_size,
-         max_temporary_workers: config.max_temporary_workers,
+         temporary_max_workers: config.temporary_max_workers,
+         temporary_worker_idle_timeout: config.temporary_worker_idle_timeout,
          name: queue_name,
          worker_supervisor: supervisor_name
        ]}
