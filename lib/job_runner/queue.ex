@@ -173,11 +173,10 @@ defmodule JobRunner.Queue do
 
     {task_fun, maybe_from} = task
 
-    # When there's an available worker after assigning a task,
-    # dequeue the next one to to keep the workers busy. This is
-    # especially important when we have temporary workers that need
-    # to be kept active to prevent them from shutting down due to idle
-    # timeouts.
+    # When there's an available worker after assigning a task, dequeue
+    # the next one to to keep the workers busy. This is especially important
+    # when we have temporary workers that need to be kept active to prevent
+    # them from shutting down due to idle timeouts.
     if is_pid(get_random_available_worker(state)) do
       send(self(), :dequeue)
     end
