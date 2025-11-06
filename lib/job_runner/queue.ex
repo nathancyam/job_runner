@@ -85,7 +85,7 @@ defmodule JobRunner.Queue do
 
   @impl GenServer
   def handle_call({:enqueue, task}, from, state) when is_function(task) do
-    queue = :queue.in({task, from}, state.queue)
+    queue = :queue.in_r({task, from}, state.queue)
     send(self(), :dequeue)
     {:noreply, %{state | queue: queue}}
   end
